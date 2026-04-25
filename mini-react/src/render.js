@@ -1,27 +1,3 @@
-// console.log(3)
-// const div = document.createElement('div')
-// div.id = "app"
-// div.style="background-color: red;height:100px;width:100px"
-
-
-
-const element = {
-    type: 'div',
-    props: {
-        id: 'app',
-        style: 'background-color: red;height:100px;width:100px',
-        children:[
-            {
-                type:"TEXT_ELEMENT",
-                props:{
-                    text:"test"
-                }
-            }
-        ]
-    }
-}
-
-
 function isProperty(key){
     return key !== "children"
 }
@@ -44,9 +20,4 @@ function render(element,container){
     })
     return dom;
 }
-
-
-const root = document.querySelector('#app') 
-render(element,root)
-
-
+export default render;
