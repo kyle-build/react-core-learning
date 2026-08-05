@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(nohup ./node_modules/.bin/vite --port 5173 > /tmp/mini-react-dev.log 2>&1 & *)",
+      "Bash(nvm ls *)",
+      "Read(//Users/bytedance/.nvm/versions/node/**)",
+      "Bash(curl -s http://localhost:5173/src/App.jsx)",
+      "Bash(curl -s http://localhost:5173/)"
+    ],
+    "additionalDirectories": [
+      "/private/tmp"
+    ]
+  }
+}
