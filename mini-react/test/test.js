@@ -11,15 +11,18 @@ function createTextElement(text) {
         }
     }
 }
-
-/**
- * JSX 编译后会调用这个函数，例如 <div id="a">test</div> 编译为
- * createElement('div', { id: 'a' }, 'test')
- * @param {string} type
- * @param {object} props
- * @param  {...any} children
- */
 function createElement(type, props, ...children) {
+    console.log(type,props,children)
+    let temp = {
+        type,
+        props:{
+              ...props,
+            children: children.map(child =>
+                typeof child === 'object' ? child : createTextElement(child)
+            )
+        }
+    }
+    console.log(temp)
     return {
         type,
         props: {
@@ -31,4 +34,19 @@ function createElement(type, props, ...children) {
     }
 }
 
-export default createElement
+createElement({
+  "type": "div",
+  "props": {
+    "style": "color: blue",
+    "children": [
+      {
+        "type": "TEXT_ELEMENT",
+        "props": {
+          "nodeValue": "1",
+          "children": []
+        }
+      }
+    ]
+  }
+}
+)

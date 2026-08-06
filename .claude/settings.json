@@ -5,10 +5,17 @@
       "Bash(nvm ls *)",
       "Read(//Users/bytedance/.nvm/versions/node/**)",
       "Bash(curl -s http://localhost:5173/src/App.jsx)",
-      "Bash(curl -s http://localhost:5173/)"
+      "Bash(curl -s http://localhost:5173/)",
+      "Bash(ls -la /Users/bytedance/Desktop/workspace/demos/react-core-learning/.claude/skills 2>/dev/null; echo \"---user skills---\"; ls -la ~/.claude/skills 2>/dev/null)",
+      "Read(//Users/bytedance/.claude/skills/**)",
+      "Bash(git rm *)",
+      "Bash(find ~/.claude/skills/bytedcli -maxdepth 2 -type f | head -20; echo \"---\"; ls ~/.claude/skills/bytedcli)",
+      "Read(//Users/bytedance/.claude/skills/bytedcli/**)",
+      "Bash(mkdir -p /Users/bytedance/Desktop/workspace/demos/react-core-learning/.claude/skills/tech-doc)"
     ],
     "additionalDirectories": [
-      "/private/tmp"
+      "/private/tmp",
+      "/Users/bytedance/Desktop/workspace/demos/react-core-learning/.claude/skills"
     ]
   }
 }
