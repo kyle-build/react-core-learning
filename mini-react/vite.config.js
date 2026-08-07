@@ -1,8 +1,10 @@
 import { defineConfig } from 'vite'
+import myJsxPlugin from './tools/vite-plugin-my-jsx.mjs'
 
 export default defineConfig({
+    plugins: [myJsxPlugin()],
     esbuild: {
-        // 使用经典 JSX 转换，编译后调用我们自己的 createElement，而不是 React.createElement
+        // .jsx 文件现在由 myJsxPlugin 提前转换掉了，这里留着只是给万一漏网的 JSX 语法兜底
         jsx: 'transform',
         jsxFactory: 'createElement',
         jsxFragment: 'Fragment',
