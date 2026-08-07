@@ -9,18 +9,24 @@ import createDom from './createDom.js'
 let nextUnitOfWork = null
 
 /**
+ * 本轮渲染正在内存里构建、还没挂到真实 DOM 上的根 fiber
+ */
+let wipRoot = null
+
+/**
  * 渲染入口：不再自己递归渲染，只是把根 fiber 放进任务队列，
  * 真正的渲染工作交给 workLoop 在浏览器空闲时间里异步完成
  * @param {*} element 元素对象
  * @param {*} container 容器元素
  */
 function render(element, container){
-    nextUnitOfWork = {
+    wipRoot = {
         dom: container,
         props: {
             children: [element]
         }
     }
+    nextUnitOfWork = wipRoot
 }
 
 // 临时实验：改这个值对比 1 和 0 两种阈值下是否会出现"超支"（elapsedWall > initialBudget）
@@ -43,6 +49,10 @@ function workLoop(deadline){
         lastUnitCost = performance.now() - unitStart
         iterations++
         shouldYield = deadline.timeRemaining() < YIELD_MARGIN
+    }
+
+    if(!nextUnitOfWork && wipRoot){
+        commitRoot()
     }
 
     const elapsedWall = performance.now() - callbackStart
@@ -87,6 +97,29 @@ function mountToParent(fiber){
 }
 
 /**
+ * 把 wipRoot 这棵已经在内存里建完的 fiber 树，一次性同步挂到真实 DOM 上
+ */
+function commitRoot(){
+    commitWork(wipRoot.child)
+    wipRoot = null
+}
+
+/**
+ * 递归把一个 fiber 挂到父节点上，再处理它的 child/sibling。
+ * 这一步同步、不可中断——树已经建完了，挂载必须一次做完，
+ * 保证用户任何时候看到的都是完整的一次渲染结果，不会看到中间态
+ * @param {*} fiber
+ */
+function commitWork(fiber){
+    if(!fiber){
+        return
+    }
+    mountToParent(fiber)
+    commitWork(fiber.child)
+    commitWork(fiber.sibling)
+}
+
+/**
  * 将element转链表储起来
  */
 function elementToLinklist(fiber){
@@ -117,9 +150,7 @@ function elementToLinklist(fiber){
 function performUnitOfWork(fiber){
     buildDom(fiber)
     busyWait(0.5)
-    // TODO: 这里应该等整棵 fiber 树都建完再统一挂载，而不是建一个挂一个，
-    // 否则渲染被打断时页面会出现一棵没建完的“半棵树”
-    mountToParent(fiber)
+    // Step 3：不再立刻挂载，只在内存里建 fiber 树；整棵树建完后由 commitRoot 一次性挂载
     elementToLinklist(fiber)
     if(fiber.child){
         return fiber.child
