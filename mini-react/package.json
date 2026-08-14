@@ -1,15 +1,15 @@
 {
   "name": "mini-react",
   "version": "1.0.0",
-  "main": "index.js",
+  "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "vite"
+    "dev": "vite",
+    "build": "vite build"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "从零手写的 mini-react：createElement / Fiber 可中断渲染 / render-commit 两阶段",
   "devDependencies": {
     "@babel/generator": "^8.0.0",
     "@babel/parser": "^8.0.4",

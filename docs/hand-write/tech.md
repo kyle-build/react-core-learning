@@ -307,10 +307,129 @@ function workLoop(deadline){
 
 （旁注：真实 React 的 Scheduler 包后来放弃了 `requestIdleCallback`——因为不同浏览器/场景下它的调度行为很不稳定，且 Safari 至今不支持——改用 `MessageChannel` 自己实现了一套时间分片调度。mini-react 这里用 `requestIdleCallback` 只是为了更直观地理解"可中断渲染"这个思路本身。）
 
+## Step 3：Render / Commit 两阶段
+
+**目标**：解决 Step 2 遗留的"半棵树"问题——让 `performUnitOfWork` 只在内存里建 fiber 树、完全不碰真实 DOM，整棵树建完之后再由 `commitRoot` 一次性挂载。用户要么看到上一次的完整结果，要么看到这一次的完整结果，永远不会看到中间态。
+
+**问题 1：可中断 和 直接改 DOM 是天然冲突的**
+Step 2 的 `performUnitOfWork` 里，"建 dom"和"append 到父节点"是连在一起做的。而工作循环随时可能在两个工作单元之间让出主线程——让出的那一刻，浏览器就会拿着"已经挂上去的一部分节点"去绘制。渲染越慢，这个半成品被看到的窗口越大（Step 2 里靠 `busyWait` 已经实测复现过）。
+→ 只要真实 DOM 是在可中断的过程中被逐步修改的，中间态就必然会被看见。**唯一的出路是让可中断的那部分工作不产生任何可见副作用。**
+
+**问题 2：那"挂载"这件事挪到哪里去**
+挂载必须发生在"整棵树都建完"这个确定的时间点上，而且它自己不能再被中断——否则又退化成问题 1。
+→ 把渲染拆成两个阶段，它们的可中断性正好相反：
+
+```
+render 阶段（可中断、无副作用）      commit 阶段（同步、不可中断、有副作用）
+performUnitOfWork 逐个建 fiber   -->  整棵树建完  -->  commitRoot 递归 append
+      ↑ 随时可以让出主线程                                    ↑ 一口气做完
+```
+
+commit 阶段之所以敢同步做，是因为它只剩纯粹的 DOM 操作，没有 diff、没有组件计算，耗时远小于 render 阶段。真实 React 也是这么划分的。
+
+**问题 3：树建完了，怎么知道根在哪**
+`nextUnitOfWork` 会随着遍历一路往下走，走完就变成 `undefined`，拿不到树根了。
+→ 额外用一个 `wipRoot`（work in progress root）变量把本轮渲染的根 fiber 存住，它既是"当前有没有一棵待提交的树"的标志位，也是 commit 阶段的入口。
+
+**实现（`render.js`）**：
+
+```js
+let nextUnitOfWork = null   // 渲染进度断点
+let wipRoot = null          // 本轮正在内存里构建、还没挂载的根 fiber
+
+function render(element, container){
+    wipRoot = {
+        dom: container,
+        props: { children: [element] }
+    }
+    nextUnitOfWork = wipRoot
+    scheduleWorkLoop()
+}
+
+function performUnitOfWork(fiber){
+    buildDom(fiber)          // 只建节点，不 append
+    elementToLinklist(fiber) // 建子 fiber 链表
+    // ...child -> sibling -> 回溯 parent
+}
+
+function workLoop(deadline){
+    while(nextUnitOfWork && !shouldYield){ /* ... */ }
+    // nextUnitOfWork 为空 = 整棵树建完了，且确实有一棵待提交的树
+    if(!nextUnitOfWork && wipRoot){
+        commitRoot()
+    }
+}
+
+function commitRoot(){
+    commitWork(wipRoot.child)
+    wipRoot = null           // 提交完清空，避免重复提交
+}
+
+function commitWork(fiber){
+    if(!fiber) return
+    if(fiber.parent){ fiber.parent.dom.append(fiber.dom) }
+    commitWork(fiber.child)
+    commitWork(fiber.sibling)
+}
+```
+
+注意 `commitWork` 这里用的是**普通递归**，和 Step 2 极力避免的递归看起来矛盾，其实不然：Step 2 要拆掉递归是因为那个过程需要可中断，而 commit 恰恰要求不可中断，用递归反而更简单直接。
+
+**顺带做的一处调度优化**：Step 2 里 `workLoop` 结尾无条件 `requestIdleCallback(workLoop)`，即使没有任何渲染任务也会一直空转排队。改成按需调度——`render()` 时启动，`workLoop` 结束时只有 `nextUnitOfWork` 还在才继续排队，并用 `isLoopScheduled` 防止重复注册：
+
+```js
+let isLoopScheduled = false
+
+function scheduleWorkLoop(){
+    if(isLoopScheduled) return
+    isLoopScheduled = true
+    requestIdleCallback(workLoop)
+}
+
+function workLoop(deadline){
+    isLoopScheduled = false
+    // ...
+    if(nextUnitOfWork) scheduleWorkLoop()
+}
+```
+
+**踩坑记录**：
+1. `commitRoot` 里从 `wipRoot.child` 开始而不是 `wipRoot` 本身。根 fiber 的 `dom` 就是外部传进来的容器（已经在页面上了），它没有 `parent`，从它开始只会白走一层。
+2. `commitRoot` 之后必须把 `wipRoot` 置为 `null`。否则 `workLoop` 下一次被调用时 `nextUnitOfWork` 依旧为空、`wipRoot` 依旧有值，会把同一棵树反复 append 一遍（DOM 的 `append` 对已挂载节点是移动而非复制，现象是节点顺序错乱而不是变多，更难排查）。
+3. 判断条件要写成 `!nextUnitOfWork && wipRoot` 两个都判。只判 `!nextUnitOfWork` 的话，页面空闲、根本没有渲染任务时也会进 `commitRoot`，直接在 `wipRoot.child` 上报空指针。
+4. 调试用的 `busyWait` / `console.log` 从这一步开始集中收进 `debug.js` 的 `debugConfig` 开关，默认全关。之前直接写死在 `performUnitOfWork` 和 `createDom` 里，每次调试都要改源码、还容易误提交。
+
+**验证方式**：
+- 在 Node 里用 DOM stub（假的 `createElement`/`createTextNode`/`append`）跑一棵 `div > [span("a"), div > span("b")]` 的树，重点断言两件事：`render()` 同步返回后容器的子节点数必须为 **0**（证明 render 阶段确实没有副作用），异步跑完后再比对最终树结构和内容。
+- 用 `setTimeout` 模拟 `requestIdleCallback`，跑完后进程能自然退出——反证按需调度生效了，没有残留的无限排队。
+- 浏览器里打开 `debug.js` 的 `slowUnitMs: 0.5` 再渲染 60×60 大树：页面应当空白几秒后**整块一次性出现**，而不再是 Step 2 那样一格一格画出来。这是和 Step 2 最直接的对照实验。
+
+**遗留问题（留给 Step 4）**：现在每次 `render` 都是从零建一棵全新的 fiber 树、把整个容器重新挂一遍，等于全量重渲染。数据变了要更新界面时，代价是整棵树重建 + 整棵树重挂，而且旧节点上的状态（比如输入框里已经打的字）会全部丢失。根源是**我们从来没有保留过上一次渲染的结果，也就无从比较**。下一步要解决的问题是：**怎么只更新真正变化的那部分**——办法是提交完把这棵树存成 `currentRoot`，下次渲染时新 fiber 通过 `alternate` 指回对应的旧 fiber，逐个比对后打上 `effectTag`（PLACEMENT / UPDATE / DELETION），commit 阶段按 tag 分别处理。
+
 ## 后续计划
 
-- Step 3：Render / Commit 两阶段 —— `performUnitOfWork` 只建 fiber 树（`wipRoot`），不碰真实 DOM；整棵树建完后 `commitRoot` 递归一次性挂载，解决 Step 2 遗留的"半棵树"问题
-- Step 4：Reconciliation —— 保留 `currentRoot`，新树用 `alternate` 指回旧 fiber，按 `effectTag`（PLACEMENT/UPDATE/DELETION）做 diff 和局部更新
-- Step 5：函数组件 —— `fiber.type` 是函数时调用它拿 children，区分 `updateFunctionComponent` / `updateHostComponent`
-- Step 6：useState —— fiber 挂 `hooks` 数组，`setState` 触发新一轮 render + diff
-- Step 7（可选）：事件系统（onClick 等）、简单 useEffect
+分三个阶段。阶段一是主线，走完 mini-react 就是一个「能用」的 React；阶段二补工程化细节；阶段三不再写代码，转为对照真实源码。
+
+### 阶段一：补齐渲染闭环（Step 4 - 7）
+
+- **Step 4：Reconciliation** —— commit 完把树存成 `currentRoot`，新 fiber 通过 `alternate` 指回旧 fiber，按 `type` 是否相同打 `effectTag`（PLACEMENT / UPDATE / DELETION），配一个 `deletions` 数组收集要删的节点。预计要单独处理的坑：删除的 fiber 不在新树上，只能靠额外数组带到 commit 阶段。
+- **Step 5：函数组件** —— `fiber.type` 是函数时调用它拿 children，拆成 `updateFunctionComponent` / `updateHostComponent`。核心坑是函数组件 fiber **没有自己的 dom**，commit 时 append 和删除都要沿 `parent` 向上找到最近一个有 dom 的祖先。
+- **Step 6：useState** —— fiber 上挂 `hooks` 数组，靠调用顺序（`hookIndex`）而不是名字定位 hook；`setState` 把 `currentRoot` 当 alternate 起一轮新的 render。这一步能亲手解释清楚「为什么 hooks 不能写在条件语句里」。
+- **Step 7：事件系统 + useEffect** —— `on` 开头的 prop 走 `addEventListener`，更新时要先移除旧监听器；`useEffect` 先做最简版（commit 后执行 + 依赖数组比对 + 清理函数）。
+
+走完这四步的验收标准：能跑通一个真实的 TodoList（输入、添加、删除、勾选），且输入框内容在重渲染后不丢失。
+
+### 阶段二：工程化细节
+
+- key 的 diff 策略（当前按 index 配对，做完正好能讲清楚 key 为什么重要）
+- `useMemo` / `useRef` / `useContext`
+- 批处理：多次 `setState` 合并成一次 render
+
+### 阶段三：对照真实 React 源码
+
+不再手写，把 mini-react 当参照系去读 React 18：Lane 优先级模型、`scheduler` 包为什么弃用 `requestIdleCallback` 改用 `MessageChannel`、Fiber 双缓存、`beginWork` / `completeWork` 的分工。产出为文档。
+
+### 贯穿全程
+
+- 每个 Step 完成后立刻补本文档对应章节，不要让文档落后于代码（Step 3 已经出现过一次这种情况）
+- 引入测试框架，至少覆盖 `createElement` 的输出结构和 diff 后的 DOM 快照，替掉现在靠肉眼看大网格的验证方式

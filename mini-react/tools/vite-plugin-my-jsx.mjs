@@ -10,7 +10,6 @@ export default function myJsxPlugin() {
             const ext = id.slice(id.lastIndexOf('.'))
             if (!whitelist.has(ext)) return null
 
-            console.log('hdx ', id)
             const transformed = transformJsx(code)
             return {
                 code: `/* transformed by my-jsx-transform, not esbuild */\n${transformed}`,

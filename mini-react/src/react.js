@@ -1,6 +1,6 @@
 /**
- * 把纯文本子节点包装成和普通元素一致的结构，方便 render 统一处理
  * @param {string} text
+ * @returns {object} 文本节点
  */
 function createTextElement(text) {
     return {
@@ -13,11 +13,10 @@ function createTextElement(text) {
 }
 
 /**
- * JSX 编译后会调用这个函数，例如 <div id="a">test</div> 编译为
- * createElement('div', { id: 'a' }, 'test')
  * @param {string} type
  * @param {object} props
  * @param  {...any} children
+ * @returns {object} 元素节点
  */
 function createElement(type, props, ...children) {
     return {

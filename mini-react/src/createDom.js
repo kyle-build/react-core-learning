@@ -1,3 +1,5 @@
+import { debugConfig, debug } from './debug.js'
+
 function isProperty(key){
     return key !== "children"
 }
@@ -12,7 +14,8 @@ function isStyle(key){
  * @returns
  */
 function createDom(fiber){
-    console.log(fiber)
+    debug(`[createDom] ${fiber.type}`, debugConfig.logCreateDom)
+
     const dom = fiber.type === "TEXT_ELEMENT"
         ? document.createTextNode(fiber.props.nodeValue)
         : document.createElement(fiber.type)

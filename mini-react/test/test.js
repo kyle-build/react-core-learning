@@ -12,21 +12,10 @@ function createTextElement(text) {
     }
 }
 function createElement(type, props, ...children) {
-    console.log(type,props,children)
-    let temp = {
+    return {
         type,
         props:{
               ...props,
-            children: children.map(child =>
-                typeof child === 'object' ? child : createTextElement(child)
-            )
-        }
-    }
-    console.log(temp)
-    return {
-        type,
-        props: {
-            ...props,
             children: children.map(child =>
                 typeof child === 'object' ? child : createTextElement(child)
             )

@@ -1,21 +1,12 @@
 import createDom from './createDom.js'
+import { debugConfig, debug, busyWait } from './debug.js'
 
-
-/**
- * 下一个工作单元
- * @param dom 真实的节点
- * @param props
- */
+const YIELD_MARGIN = 1
 let nextUnitOfWork = null
-
-/**
- * 本轮渲染正在内存里构建、还没挂到真实 DOM 上的根 fiber
- */
 let wipRoot = null
+let isLoopScheduled = false
 
 /**
- * 渲染入口：不再自己递归渲染，只是把根 fiber 放进任务队列，
- * 真正的渲染工作交给 workLoop 在浏览器空闲时间里异步完成
  * @param {*} element 元素对象
  * @param {*} container 容器元素
  */
@@ -27,26 +18,35 @@ function render(element, container){
         }
     }
     nextUnitOfWork = wipRoot
+    scheduleWorkLoop()
 }
 
-// 临时实验：改这个值对比 1 和 0 两种阈值下是否会出现"超支"（elapsedWall > initialBudget）
-const YIELD_MARGIN = 1
+/**
+ * 按需把 workLoop 排进空闲队列。没有活干的时候不占用任何空闲回调
+ */
+function scheduleWorkLoop(){
+    if(isLoopScheduled){
+        return
+    }
+    isLoopScheduled = true
+    requestIdleCallback(workLoop)
+}
 
 /**
- * 每帧浏览器空闲时被调用一次，尽量多做工作单元，直到没有空闲时间了就让出主线程
+ * 每次浏览器空闲时被调用一次，尽量多做工作单元，直到快没时间了就让出主线程。
+ * 整棵树建完之后进入 commit 阶段，一次性挂载
  * @param {IdleDeadline} deadline
  */
 function workLoop(deadline){
-    let shouldYield = false
-    let iterations = 0
-    let lastUnitCost = 0
+    isLoopScheduled = false
+
     const callbackStart = performance.now()
     const initialBudget = deadline.timeRemaining()
+    let iterations = 0
+    let shouldYield = false
 
     while(nextUnitOfWork && !shouldYield){
-        const unitStart = performance.now()
         nextUnitOfWork = performUnitOfWork(nextUnitOfWork)
-        lastUnitCost = performance.now() - unitStart
         iterations++
         shouldYield = deadline.timeRemaining() < YIELD_MARGIN
     }
@@ -55,31 +55,47 @@ function workLoop(deadline){
         commitRoot()
     }
 
-    const elapsedWall = performance.now() - callbackStart
-    const overBudget = elapsedWall - initialBudget
-    console.log(
-        `[workLoop] margin=${YIELD_MARGIN}ms iterations=${iterations} lastUnitCost=${lastUnitCost.toFixed(3)}ms `
-        + `initialBudget=${initialBudget.toFixed(2)}ms elapsedWall=${elapsedWall.toFixed(2)}ms `
-        + `overBudget=${overBudget.toFixed(2)}ms${overBudget > 0 ? ' <- 超支' : ''}`
-    )
+    if(debugConfig.logWorkLoop){
+        const elapsedWall = performance.now() - callbackStart
+        const overBudget = elapsedWall - initialBudget
+        debug(
+            `[workLoop] margin=${YIELD_MARGIN}ms iterations=${iterations} `
+            + `initialBudget=${initialBudget.toFixed(2)}ms elapsedWall=${elapsedWall.toFixed(2)}ms `
+            + `overBudget=${overBudget.toFixed(2)}ms${overBudget > 0 ? ' <- 超支' : ''}`,
+            debugConfig.logWorkLoop
+        )
+    }
 
-    requestIdleCallback(workLoop)
+    if(nextUnitOfWork){
+        scheduleWorkLoop()
+    }
 }
-requestIdleCallback(workLoop)
 
 /**
- * 处理一个 fiber：创建它的 dom、挂到父节点上、把它的子 element 转成子 fiber 链表，
- * 最后返回下一个要处理的 fiber（child -> sibling -> 回溯 parent 找 sibling）
- * @param {*} fiber
+ * @description 处理一个工作单元：建好当前 fiber 的 dom，把它的子 element 转成子 fiber 链表，
+ * @param {object} fiber
+ * @returns {object} 下一个工作单元，没有则返回 undefined
  */
-// 临时实验：人为拉长每个 fiber 的处理耗时，让"建一个挂一个"的半棵树现象肉眼可见
-function busyWait(ms){
-    const start = performance.now()
-    while(performance.now() - start < ms){}
+function performUnitOfWork(fiber){
+    buildDom(fiber)
+    busyWait(debugConfig.slowUnitMs)
+    elementToLinklist(fiber)
+
+    if(fiber.child){
+        return fiber.child
+    }
+    let nextFiber = fiber
+    while(nextFiber){
+        if(nextFiber.sibling){
+            return nextFiber.sibling
+        }
+        nextFiber = nextFiber.parent
+    }
+    return undefined
 }
 
 /**
- * 重建dom节点 幂等保护
+ * 建 dom 节点，幂等：根 fiber 自带容器 dom，重复进入也不会重建
  */
 function buildDom(fiber){
     if(!fiber.dom){
@@ -87,13 +103,23 @@ function buildDom(fiber){
     }
 }
 
-/**
- * 挂载到父级节点
- */
-function mountToParent(fiber){
-    if(fiber.parent){
-        fiber.parent.dom.append(fiber.dom)
-    }
+function elementToLinklist(fiber){
+    const elements = fiber.props.children ?? []
+    let prevSibling = null
+    elements.forEach((element, index) => {
+        const newFiber = {
+            type: element.type,
+            props: element.props,
+            parent: fiber,
+            dom: null
+        }
+        if(index === 0){
+            fiber.child = newFiber
+        }else{
+            prevSibling.sibling = newFiber
+        }
+        prevSibling = newFiber
+    })
 }
 
 /**
@@ -114,55 +140,11 @@ function commitWork(fiber){
     if(!fiber){
         return
     }
-    mountToParent(fiber)
+    if(fiber.parent){
+        fiber.parent.dom.append(fiber.dom)
+    }
     commitWork(fiber.child)
     commitWork(fiber.sibling)
-}
-
-/**
- * 将element转链表储起来
- */
-function elementToLinklist(fiber){
-    const elements = fiber.props.children ?? []
-    let prevSibling = null
-    elements.forEach((element, index) => {
-        const newFiber = {
-            type: element.type,
-            props: element.props,
-            parent: fiber,
-            dom: null
-        }
-        if(index === 0){
-            fiber.child = newFiber
-        }else{
-            prevSibling.sibling = newFiber
-        }
-        prevSibling = newFiber
-    })
-}
-
-
-/**
- * 处理下一个工作单元
- * @param {*} fiber fiber节点
- * @returns 
- */
-function performUnitOfWork(fiber){
-    buildDom(fiber)
-    busyWait(0.5)
-    // Step 3：不再立刻挂载，只在内存里建 fiber 树；整棵树建完后由 commitRoot 一次性挂载
-    elementToLinklist(fiber)
-    if(fiber.child){
-        return fiber.child
-    }
-    let nextFiber = fiber
-    while(nextFiber){
-        if(nextFiber.sibling){
-            return nextFiber.sibling
-        }
-        nextFiber = nextFiber.parent
-    }
-    return undefined
 }
 
 export default render;

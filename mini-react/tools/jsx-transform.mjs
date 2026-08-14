@@ -1,6 +1,3 @@
-// 手写的 JSX -> createElement(...) 转换器，不依赖 esbuild/babel 的 JSX 处理逻辑，
-// 只用 @babel/parser 拿到标准 JSX 语法树（AST），转换和生成代码都是自己写的，
-// 用来验证"JSX 怎么变成 createElement 调用"这条链路本身。
 import { parse } from '@babel/parser'
 import traverseModule from '@babel/traverse'
 import generateModule from '@babel/generator'
@@ -9,6 +6,7 @@ import * as t from '@babel/types'
 const traverse = traverseModule.default ?? traverseModule
 const generate = generateModule.default ?? generateModule
 
+// 用来验证"JSX 怎么变成 createElement 调用"这条链路本身。
 function jsxNameToNode(nameNode) {
     if (t.isJSXIdentifier(nameNode)) {
         // 首字母大写认为是组件（变量引用），否则是普通标签名（字符串）
@@ -85,7 +83,6 @@ function jsxToCallExpression(node) {
  */
 export function transformJsx(code) {
     const ast = parse(code, { sourceType: 'module', plugins: ['jsx'] })
-    console.log("[hdx] ast ",ast)
     traverse(ast, {
         JSXElement(path) {
             path.replaceWith(jsxToCallExpression(path.node))
