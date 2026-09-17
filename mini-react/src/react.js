@@ -1,12 +1,14 @@
+/** @typedef {import('./types.js').ReactElement} ReactElement */
+
 /**
- * @param {string} text
- * @returns {object} 文本节点
+ * @param {string|number} text
+ * @returns {ReactElement}
  */
 function createTextElement(text) {
     return {
         type: 'TEXT_ELEMENT',
         props: {
-            nodeValue: text,
+            nodeValue: String(text),
             children: []
         }
     }
@@ -14,9 +16,9 @@ function createTextElement(text) {
 
 /**
  * @param {string} type
- * @param {object} props
- * @param  {...any} children
- * @returns {object} 元素节点
+ * @param {Object|null} props
+ * @param {...(ReactElement|string|number)} children
+ * @returns {ReactElement}
  */
 function createElement(type, props, ...children) {
     return {

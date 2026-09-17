@@ -3,9 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document</title>
+    <title>mini-react</title>
 </head>
 <body>
+    <p>按钮在 #app 外面，用原生监听触发第二次 render，用来单独验证 UPDATE / DELETION / PLACEMENT。</p>
+    <button id="btn-update">改标题（UPDATE）</button>
+    <button id="btn-remove">删一项（DELETION）</button>
+    <button id="btn-add">加一项（PLACEMENT）</button>
     <div id="app"></div>
     <script type="module" src="./src/main.js"></script>
 </body>

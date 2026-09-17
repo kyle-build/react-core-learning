@@ -4,12 +4,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build"
+    "build": "vite build",
+    "test": "node --test test/createElement.test.js test/reconcile.test.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "从零手写的 mini-react：createElement / Fiber 可中断渲染 / render-commit 两阶段",
+  "description": "从零手写的 mini-react：createElement / Fiber / render-commit / reconciliation",
   "devDependencies": {
     "@babel/generator": "^8.0.0",
     "@babel/parser": "^8.0.4",

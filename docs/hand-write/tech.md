@@ -41,6 +41,7 @@ root.appendChild(div);
 ```
 
 vite 会尝试解析 `const App = <div>test</div>`，然后调用 `react.createElement()` 把 JSX 编译成 element 对象。在真正实现 `createElement` 之前，先手写这个 object 来验证渲染逻辑：
+https://react.dev/reference/react/createElement  这个对象的数据结构类型 
 ```js
 const App = {
     type: 'div',
@@ -406,22 +407,110 @@ function workLoop(deadline){
 
 **遗留问题（留给 Step 4）**：现在每次 `render` 都是从零建一棵全新的 fiber 树、把整个容器重新挂一遍，等于全量重渲染。数据变了要更新界面时，代价是整棵树重建 + 整棵树重挂，而且旧节点上的状态（比如输入框里已经打的字）会全部丢失。根源是**我们从来没有保留过上一次渲染的结果，也就无从比较**。下一步要解决的问题是：**怎么只更新真正变化的那部分**——办法是提交完把这棵树存成 `currentRoot`，下次渲染时新 fiber 通过 `alternate` 指回对应的旧 fiber，逐个比对后打上 `effectTag`（PLACEMENT / UPDATE / DELETION），commit 阶段按 tag 分别处理。
 
+## Step 4：Reconciliation，按 type 做增量更新
+
+**目标**：第二次 `render()` 不再拆掉整棵 DOM。`type` 相同的节点复用原来的 `dom` 只改 props，少了的摘掉，多了的新建。这一步仍然只有 host 组件（`div` / `h1` / 文本），二次渲染由外部手动调用 `render` 触发，不引入函数组件、hooks 或事件系统。
+
+**问题 1：提交完就把树扔了，无从比较**
+Step 3 的 `commitRoot` 在挂载后立刻 `wipRoot = null`。下一轮 `render` 只能再造一棵全新的 fiber，每个节点 `dom: null`，commit 再 `appendChild` 一遍。同位置的 `<h1>` 其实还是那个 `<h1>`，却被当成新节点。
+→ 提交完把这棵树存成 `currentRoot`。下一轮 `wipRoot.alternate = currentRoot`，新 fiber 才能找到「上一次的自己」。
+
+**问题 2：可中断的 render 阶段仍然不能碰可见 DOM**
+比较必须发生在 `performUnitOfWork` 里，但这一阶段随时会让出主线程。如果一边 diff 一边 `append` / `remove`，又会回到 Step 2 的半棵树。
+→ render 阶段只打标记：`effectTag` 为 `PLACEMENT` / `UPDATE` / `DELETION`。真正改 DOM 仍集中在 commit。
+
+**问题 3：被删的 fiber 不在新树上**
+新 fiber 链表是按新 `element` 建的。旧树里多出来的那个 `<li>` 没有对应的新 fiber，commit 若只走 `wipRoot.child` 会漏掉删除。
+→ 单独用 `deletions` 数组把旧 fiber 带到 commit，先处理删除再处理新树。
+
+链路：`currentRoot` --[alternate]--> 新 wip fiber --[按 index 比 type]--> `effectTag` --[commit 按 tag 改 DOM]--> 新的 `currentRoot`
+
+**实现（`render.js` / `createDom.js`）**：
+
+`render` 起一轮新树时挂上 alternate，并清空 `deletions`：
+
+```js
+function render(element, container) {
+    wipRoot = {
+        dom: container,
+        props: { children: [element] },
+        alternate: currentRoot
+    }
+    deletions = []
+    nextUnitOfWork = wipRoot
+    scheduleWorkLoop()
+}
+```
+
+`elementToLinklist` 换成 `reconcileChildren`：新旧两条链表按 index 齐头并进。`type` 相同则复用 `dom` 打 `UPDATE`；有新 element 但 type 不同打 `PLACEMENT`；有旧 fiber 但 type 不同打 `DELETION` 推进数组。
+
+```js
+if (sameType) {
+    newFiber = {
+        type: oldFiber.type,
+        props: element.props,
+        dom: oldFiber.dom,
+        parent: wipFiber,
+        alternate: oldFiber,
+        effectTag: UPDATE
+    }
+}
+```
+
+`commitRoot` 先提交 `deletions`，再提交新树，最后 `currentRoot = wipRoot`：
+
+```js
+function commitRoot() {
+    deletions.forEach(commitWork)
+    commitWork(wipRoot.child)
+    currentRoot = wipRoot
+    wipRoot = null
+}
+```
+
+`createDom.js` 抽出 `updateDom(dom, prevProps, nextProps)`：`createDom` 是 `updateDom(dom, {}, props)`，`UPDATE` 则拿 `fiber.alternate.props` 当 prev。`style` 继续走 `cssText`，文本走 `nodeValue`。
+
+演示页不把按钮放进 mini-react 树里。`index.html` 里 `#app` 外面的原生按钮直接再调一次 `render(createApp(...), root)`，三个按钮分别对应 UPDATE / DELETION / PLACEMENT。动态列表用 `createElement('ul', null, ...items.map(...))` 展开，避免 JSX `{items.map}` 变成单个 array child。
+
+**踩坑记录**：
+1. **删掉的节点 commit 时找不到** → 它们不在新 fiber 树上，必须靠 `deletions` 额外带过去。只走 `commitWork(wipRoot.child)` 会留下残 DOM。
+2. **DELETION 之后如果继续递归 `child` / `sibling`** → 旧子树上还留着上一轮的 `effectTag`，会对着已经离开文档的节点再 `removeChild` / `updateDom`，直接抛错。host 组件删掉当前节点即可，子树随父节点离开文档。
+3. **`commitRoot` 仍把 `wipRoot` 置 `null`，但必须另存 `currentRoot`** → 只清 `wipRoot` 的话下一轮又回到「无从比较」。
+4. **模块级 `currentRoot` 是单例** → 两个测试共用一次 `import` 会串树。`reset()` 只为测试隔离存在，生产路径用不到。
+5. **JSX `{items.map(i => <li>{i}</li>)}` 会变成一个 array 类型的 child** → `createElement` 还不拍平数组。演示和测试都用 rest 参数展开，这个问题留给以后专门做 `flatten`。
+
+**验证方式**：
+1. 最快：`cd mini-react && node --test test/createElement.test.js test/reconcile.test.js`。`reconcile.test.js` 里三个独立用例分别钉死 UPDATE（DOM 引用不变、文本变）、DELETION（少一个 `li`）、PLACEMENT（尾部多一个 `li`），外加 type 变化时旧节点被替换。
+2. 测试用同步 `requestIdleCallback` polyfill（`timeRemaining` 恒为 50）+ DOM stub，不依赖浏览器。每个用例 `beforeEach(reset)`，容器是新的 stub 节点。
+3. 浏览器：`yarn dev` 后点三个按钮。改标题时红盒子不应闪一下重建；删/加 `li` 时其余项保持原位。
+
+### 原理答疑
+
+**`alternate` 是什么**
+同一位置上「正在建的这棵树」和「屏幕上那棵树」的配对指针。新 fiber 通过它读到旧 `dom`、旧 `props`。commit 结束后 `currentRoot` 指向刚才的 wip 树，原来的 current 被丢掉，等下一轮再反过来当 alternate。这就是双缓存的最小版。
+
+**为什么现在按 index 配对，不按 key**
+这一步只证明「能 diff」。`oldFiber` 和 `elements[index]` 对齐，类型相同就当成同一个节点。所以 `[A, B]` 变成 `[B]` 时，index 0 会拿旧 A 去对新年 B——若两者都是 `li`，会被误判成 UPDATE，旧 A 的 DOM 改成 B 的文本，旧 B 再 DELETION。这正是 key 要解决的问题，放到阶段二单独做，避免和「第一次能增量更新」混在一个 Step 里。
+
+**遗留问题（留给 Step 5）**：现在 `fiber.type` 只能是字符串（标签名或 `TEXT_ELEMENT`）。还不能写函数组件，也就没有组件自己的「实例」去接 `useState`。下一步要在 `performUnitOfWork` 里识别函数 type、调用它拿到 children；函数组件 fiber **没有自己的 dom**，commit 的 append / 删除都要向上找到最近的 host 祖先。
+
 ## 后续计划
 
-分三个阶段。阶段一是主线，走完 mini-react 就是一个「能用」的 React；阶段二补工程化细节；阶段三不再写代码，转为对照真实源码。
+每个未做的 Step 仍然保持「一块能力、一套能单独跑的测试」，不把两件只能分开验证的事捆在一起。
 
-### 阶段一：补齐渲染闭环（Step 4 - 7）
+### 阶段一：补齐渲染闭环（Step 5 - 8）
 
-- **Step 4：Reconciliation** —— commit 完把树存成 `currentRoot`，新 fiber 通过 `alternate` 指回旧 fiber，按 `type` 是否相同打 `effectTag`（PLACEMENT / UPDATE / DELETION），配一个 `deletions` 数组收集要删的节点。预计要单独处理的坑：删除的 fiber 不在新树上，只能靠额外数组带到 commit 阶段。
-- **Step 5：函数组件** —— `fiber.type` 是函数时调用它拿 children，拆成 `updateFunctionComponent` / `updateHostComponent`。核心坑是函数组件 fiber **没有自己的 dom**，commit 时 append 和删除都要沿 `parent` 向上找到最近一个有 dom 的祖先。
-- **Step 6：useState** —— fiber 上挂 `hooks` 数组，靠调用顺序（`hookIndex`）而不是名字定位 hook；`setState` 把 `currentRoot` 当 alternate 起一轮新的 render。这一步能亲手解释清楚「为什么 hooks 不能写在条件语句里」。
-- **Step 7：事件系统 + useEffect** —— `on` 开头的 prop 走 `addEventListener`，更新时要先移除旧监听器；`useEffect` 先做最简版（commit 后执行 + 依赖数组比对 + 清理函数）。
+- **Step 5：函数组件** —— `fiber.type` 是函数时调用它拿 children，拆成 `updateFunctionComponent` / `updateHostComponent`。单独测试：函数返回的 host 树能挂上；函数组件自己没有 `dom`，commit 仍能 append 到 host 祖先。
+- **Step 6：useState** —— fiber 上挂 `hooks` 数组，靠 `hookIndex` 定位；`setState` 以 `currentRoot` 为 alternate 起一轮新 render。单独测试：连续两次 `setState` 能留下 state；条件调用 hook 会错位（用来解释规则）。
+- **Step 7：事件系统** —— `on` 开头的 prop 走 `addEventListener`，UPDATE 时先卸旧监听再绑新的。单独测试：click 能调到最新 handler，节点删除后监听不泄漏。
+- **Step 8：useEffect** —— commit 后执行，依赖数组比对，有 cleanup。单独测试：依赖不变不重跑；节点删除时 cleanup 会执行。
 
 走完这四步的验收标准：能跑通一个真实的 TodoList（输入、添加、删除、勾选），且输入框内容在重渲染后不丢失。
 
 ### 阶段二：工程化细节
 
-- key 的 diff 策略（当前按 index 配对，做完正好能讲清楚 key 为什么重要）
+- key 的 diff 策略（Step 4 按 index 配对，做完正好能讲清楚 key 为什么重要）
+- `createElement` 拍平 array child（现在 JSX `map` 会踩这个坑）
 - `useMemo` / `useRef` / `useContext`
 - 批处理：多次 `setState` 合并成一次 render
 
@@ -431,5 +520,5 @@ function workLoop(deadline){
 
 ### 贯穿全程
 
-- 每个 Step 完成后立刻补本文档对应章节，不要让文档落后于代码（Step 3 已经出现过一次这种情况）
-- 引入测试框架，至少覆盖 `createElement` 的输出结构和 diff 后的 DOM 快照，替掉现在靠肉眼看大网格的验证方式
+- 每个 Step 完成后立刻补本文档对应章节，不要让文档落后于代码
+- 自动化测试用 Node 自带的 `node --test`，不额外装框架；每个新 Step 至少带一组能单独跑、不依赖浏览器的用例

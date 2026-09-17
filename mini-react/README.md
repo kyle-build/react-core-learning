@@ -1,6 +1,6 @@
 # mini-react
 
-从零手写的 React 实现，用来搞清楚 React 的渲染机制到底是怎么跑起来的。每个 Step 对应一次可运行的迭代，配套的实现笔记在 [`docs/hand-write/tech.md`](../docs/hand-write/tech.md)。
+从零手写的 React 实现，用来搞清楚 React 的渲染机制到底是怎么跑起来的。每个 Step 对应一次可运行、可单独测试的迭代，配套的实现笔记在 [`docs/hand-write/tech.md`](../docs/hand-write/tech.md)。
 
 ## 运行
 
@@ -12,6 +12,10 @@ yarn install
 yarn dev
 ```
 
+```bash
+yarn test
+```
+
 ## 当前进度
 
 | Step | 内容 | 状态 |
@@ -20,30 +24,36 @@ yarn dev
 | Step 1 | `createElement`，接管 JSX 编译产物 | 完成 |
 | Step 2 | Fiber 链表 + `requestIdleCallback` 可中断渲染循环 | 完成 |
 | Step 3 | render / commit 两阶段，消除「半棵树」中间态 | 完成 |
-| Step 4 | Reconciliation：`alternate` + `effectTag` 增量更新 | 未开始 |
+| Step 4 | Reconciliation：`alternate` + `effectTag` 增量更新 | 完成 |
 | Step 5 | 函数组件 | 未开始 |
 | Step 6 | `useState` | 未开始 |
-| Step 7 | 事件系统 + `useEffect` | 未开始 |
+| Step 7 | 事件系统 | 未开始 |
+| Step 8 | `useEffect` | 未开始 |
 
 ## 目录结构
 
 ```
 src/
 ├── react.js        createElement，把 JSX 编译产物转成 element 对象
-├── createDom.js    根据 fiber 创建真实 DOM 节点并设置 props
-├── render.js       核心引擎：fiber 链表 + 工作循环 + render/commit 两阶段
-├── debug.js        实验开关与日志工具，默认只开总开关
-├── App.jsx         演示用的 60×60 网格大树
-├── main.js         入口
-└── demos/          零散的语法/AST 试验片段，不参与渲染
+├── createDom.js    创建 DOM + updateDom（按 props 差量写属性）
+├── render.js       fiber 工作循环 / render-commit / reconcile
+├── types.js        ReactElement / Fiber 的 JSDoc typedef
+├── App.jsx         createApp(title, items)，给二次 render 用
+└── main.js         入口；原生按钮触发 UPDATE / DELETION / PLACEMENT
+debug/
+└── debug.js        实验开关与日志，默认只开总开关
+test/
+├── createElement.test.js
+├── reconcile.test.js
+└── dom-stub.js     Node 里用的 document / requestIdleCallback stub
 tools/
-├── jsx-transform.mjs        手写的 JSX -> createElement AST 转换（Babel）
-└── vite-plugin-my-jsx.mjs   把上面的转换接进 Vite 构建流程
+├── jsx-transform.mjs
+└── vite-plugin-my-jsx.mjs
 ```
 
 ## 调试开关
 
-`src/debug.js` 里的 `debugConfig` 控制所有观察性代码，渲染逻辑本身不依赖它们：
+`debug/debug.js` 里的 `debugConfig` 控制所有观察性代码，渲染逻辑本身不依赖它们：
 
 | 开关 | 默认 | 作用 |
 | --- | --- | --- |
@@ -54,4 +64,4 @@ tools/
 
 `render.js` 里的 `YIELD_MARGIN` 决定什么时候让出主线程，语义是「剩下的时间还够不够再做一个工作单元」，所以取值应当约等于单个工作单元的典型耗时。因为 `IdleDeadline.timeRemaining()` 的返回值钳制在 0 以上，这个值设成 `0` 会让 `shouldYield` 永远为假，等于关掉时间分片。
 
-例如想复现 Step 2 的「半棵树」现象、或对比 Step 3 的一次性挂载效果，把 `slowUnitMs` 设成 `0.5` 再刷新页面即可。
+Step 4 的页面验证：打开 dev server 后点「改标题 / 删一项 / 加一项」。按钮在 `#app` 外面，走原生 `addEventListener`，不经过 mini-react 的事件系统。
