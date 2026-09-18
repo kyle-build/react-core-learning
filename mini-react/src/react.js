@@ -32,4 +32,5 @@ function createElement(type, props, ...children) {
     }
 }
 
+export { useState } from './render.js'
 export default createElement

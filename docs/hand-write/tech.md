@@ -598,25 +598,107 @@ function commitDeletion(fiber, domParent) {
 
 **遗留问题（留给 Step 6）**：函数组件能渲染了，但还没有自己的状态。现在要变界面只能从外面再调一次 `render(createElement(App, newProps), root)`。下一步要在函数组件 fiber 上挂 `hooks` 数组，靠 `hookIndex` 定位；`setState` 以 `currentRoot` 为 alternate 起一轮新 render，这样组件内部就能自己触发更新。
 
+## Step 6：useState
+
+**目标**：函数组件可以用 `useState` 保住自己的状态，`setState` 自己起一轮 render。不引入事件系统：演示和测试都从组件里把 setter 交出去，再在外面调用。
+
+**问题 1：函数每次都会重新执行，局部变量留不住**
+Step 5 里 `updateFunctionComponent` 每次都 `fiber.type(fiber.props)`。`let count = 0` 写在函数体里，下一轮又是 0。闭包救不了：新的一次调用会新建作用域。
+→ 状态必须挂在**能活过一轮 render 的对象上**。函数组件 fiber 通过 `alternate` 正好活过一轮，所以 `hooks` 数组记在这根 fiber 上。
+
+**问题 2：一条 fiber 上可能有多次 useState，不能靠变量名找**
+`const [a, setA] = useState('A'); const [b, setB] = useState('B')` 两次调用进的是同一个函数。没有「名叫 a 的 hook」这种东西。
+→ 用调用顺序当索引：每次 `updateFunctionComponent` 把 `hookIndex` 归零，每调一次 `useState` 读 `alternate.hooks[hookIndex]` 再 `hookIndex++`。这就是「hooks 不能写在条件语句里」的根因——少调一次，后面的 hook 会读到别人的 state。
+
+**问题 3：setState 发生时，函数已经跑完了**
+用户点按钮时不在 `updateFunctionComponent` 里。不能直接改正在屏幕上那棵树（那是 current，commit 过的）。
+→ `setState` 把 updater 推进**当前这条 hook 的 queue**，然后用 `currentRoot` 当 alternate 起一轮新的 wip 树。下一轮 `useState` 再把 queue 里的 action 应用到 old state 上，得到新 state。
+
+链路：`useState --[按 hookIndex 读写 fiber.hooks]--> setState 入队 --[以 currentRoot 为 alternate 启 render]--> 函数再执行 --[应用 queue]--> 新 state`
+
+**实现（`render.js`，由 `react.js` 再导出 `useState`）**：
+
+```js
+function updateFunctionComponent(fiber) {
+    wipFiber = fiber
+    hookIndex = 0
+    fiber.hooks = []
+    const children = [fiber.type(fiber.props)]
+    wipFiber = null
+    reconcileChildren(fiber, children)
+}
+
+function useState(initial) {
+    const oldHook = wipFiber.alternate?.hooks?.[hookIndex]
+    const hook = {
+        state: oldHook ? oldHook.state : initial,
+        queue: []
+    }
+    ;(oldHook ? oldHook.queue : []).forEach(action => {
+        hook.state = typeof action === 'function' ? action(hook.state) : action
+    })
+    const setState = action => {
+        hook.queue.push(action)
+        wipRoot = {
+            dom: currentRoot.dom,
+            props: currentRoot.props,
+            alternate: currentRoot
+        }
+        deletions = []
+        nextUnitOfWork = wipRoot
+        scheduleWorkLoop()
+    }
+    wipFiber.hooks.push(hook)
+    hookIndex++
+    return [hook.state, setState]
+}
+```
+
+`setState` 必须自己调 `scheduleWorkLoop()`：Step 3 改成按需调度之后，没有人再无条件 `requestIdleCallback`。只改 `nextUnitOfWork` 不排队，界面不会更新。
+
+演示：`App` 用 `useState` 记 `count`，渲染时把 `setCount` 交给模块级 `countApi`；`#app` 外面的「+1 / 连续 +1 两次」走原生监听。删/加一项仍是外部 `render(createElement(App, newProps))`，用来确认 **setState 更新不会丢掉 props，外部 render 也不会把 count 打回 0**。
+
+**踩坑记录**：
+1. **`setState` 只改 `nextUnitOfWork`、忘了 `scheduleWorkLoop`** → 按需调度下工作循环不会自己醒来，点按钮没反应。
+2. **queue 必须留在「被 setState 关掉的那条 hook」上** → 下一轮 `useState` 从 `alternate.hooks[i].queue` 取 action。如果推进新 hook 的 queue，那条新 hook 会在 commit 后变成 current，但 queue 是空的，更新丢失。setState 关闭的是**这一轮 render 创建的 hook 对象**。
+3. **同步 polyfill 下两次 `setState` 会各跑完一轮** → 测试里 `requestIdleCallback` 是同步的，第一次 `setState` 当场 commit。浏览器里同一轮点击里连续两次 `setState`，两次都发生在 idle 回调之前，会进同一条 queue、只 render 一次。这不是 bug，是调度时机不同；批量合并以后单独做。
+4. **`useState` 在函数外调用** → `wipFiber` 只在 `updateFunctionComponent` 期间有值。函数跑完就清掉，外面调用直接抛错。
+5. **模块级 `countApi` 在 Vite HMR 下会变成两份** → `main.js` 绑的是旧对象，`App` 渲染时写的是新对象，按钮点了没反应。演示里把同一个对象挂在 `globalThis` 上。事件系统做完就可以删掉这个桥。
+
+**验证方式**：
+1. 最快：`cd mini-react && yarn test`。`useState.test.js` 钉死：initial；连续两次 `setState` 不会回到 0 且 DOM 复用；updater 拿到上一轮 state；两个 hook 互不覆盖；条件里换一次 `useState` 会读到另一条 hook 的值（`keep` 不会变成 `fresh`）；组件外调用抛错。
+2. 原有 `function-component.test.js` / `reconcile.test.js` 不碰 `useState`，用来确认这一步没有把 Step 4/5 弄坏。
+3. 浏览器：`yarn dev` 后点「+1」，标题变成 `count: 1`，红盒子不重建；再点「连续 +1 两次」一次加 2；再点「删一项」，count 还在，只少一个 `li`。
+
+### 原理答疑
+
+**为什么不能 `if (x) useState(0)`**
+`useState` 不看你给 hook 起的名字，只看这是第几次调用。第一次 render 调了 `[tick, label]` 两条；第二次 render 用 `if` 跳过第二条、另起一条，`hookIndex === 1` 读到的仍是原来那条 `label` 的 state，`initial` 被丢掉。测试里 `0:keep` 变成 `1:keep` 而不是 `1:fresh`，就是这件事。
+
+**setState 为什么不直接改 current 树上的 hook.state**
+current 是已经画到屏幕上的那一轮。render 阶段必须可中断、无可见副作用。把更新记在 queue 里，等下一轮函数执行时再算新 state，才能和 reconcile / commit 用同一套节奏。
+
+**遗留问题（留给 Step 7）**：组件能自己更新了，但还不能在 JSX 上写 `onClick={...}`。现在按钮必须放在 `#app` 外面。下一步让 `on` 开头的 prop 走 `addEventListener`，UPDATE 时先卸旧监听再绑新的，这样 `setCount` 就能直接挂在组件内部的按钮上。
+
 ## 后续计划
 
 每个未做的 Step 仍然保持「一块能力、一套能单独跑的测试」，不把两件只能分开验证的事捆在一起。
 
-### 阶段一：补齐渲染闭环（Step 6 - 8）
+### 阶段一：补齐渲染闭环（Step 7 - 8）
 
 - ~~**Step 5：函数组件**~~（已完成）
-- **Step 6：useState** —— fiber 上挂 `hooks` 数组，靠 `hookIndex` 定位；`setState` 以 `currentRoot` 为 alternate 起一轮新 render。单独测试：连续两次 `setState` 能留下 state；条件调用 hook 会错位（用来解释规则）。
+- ~~**Step 6：useState**~~（已完成）
 - **Step 7：事件系统** —— `on` 开头的 prop 走 `addEventListener`，UPDATE 时先卸旧监听再绑新的。单独测试：click 能调到最新 handler，节点删除后监听不泄漏。
 - **Step 8：useEffect** —— commit 后执行，依赖数组比对，有 cleanup。单独测试：依赖不变不重跑；节点删除时 cleanup 会执行。
 
-走完这三步的验收标准：能跑通一个真实的 TodoList（输入、添加、删除、勾选），且输入框内容在重渲染后不丢失。
+走完这两步的验收标准：能跑通一个真实的 TodoList（输入、添加、删除、勾选），且输入框内容在重渲染后不丢失。
 
 ### 阶段二：工程化细节
 
 - key 的 diff 策略（Step 4 按 index 配对，做完正好能讲清楚 key 为什么重要）
 - `createElement` 拍平 array child（现在 JSX `map` 会踩这个坑）
 - `useMemo` / `useRef` / `useContext`
-- 批处理：多次 `setState` 合并成一次 render
+- 批处理：多次 `setState` 合并成一次 render（浏览器里同一事件里连续 `setState` 已经会进同一条 queue；测试用的同步 idle polyfill 不会）
 
 ### 阶段三：对照真实 React 源码
 

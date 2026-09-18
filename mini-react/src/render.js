@@ -18,6 +18,9 @@ let currentRoot = null
 /** @type {Fiber[]} */
 let deletions = []
 let isLoopScheduled = false
+/** @type {Fiber | null} */
+let wipFiber = null
+let hookIndex = 0
 
 /**
  * @param {ReactElement} element
@@ -45,6 +48,8 @@ export function reset() {
     currentRoot = null
     deletions = []
     isLoopScheduled = false
+    wipFiber = null
+    hookIndex = 0
 }
 
 function scheduleWorkLoop() {
@@ -52,7 +57,7 @@ function scheduleWorkLoop() {
         return
     }
     isLoopScheduled = true
-    requestIdleCallback(workLoop)
+    requestIdleCallback(workLoop, { timeout: 50 })
 }
 
 /**
@@ -122,11 +127,63 @@ function performUnitOfWork(fiber) {
 
 /**
  * 函数组件没有自己的 DOM。调用函数拿到返回的 element，再当成 children 去 reconcile。
+ * 每次调用前把 wipFiber / hookIndex 指到当前组件，useState 才能把 hook 记在这根 fiber 上。
  * @param {Fiber} fiber
  */
 function updateFunctionComponent(fiber) {
-    const children = [fiber.type(fiber.props)]
+    wipFiber = fiber
+    hookIndex = 0
+    fiber.hooks = []
+    const type = fiber.type
+    const children = typeof type === 'function'
+        ? [/** @type {(props: any) => any} */ (type)(fiber.props)]
+        : []
+    wipFiber = null
     reconcileChildren(fiber, children)
+}
+
+/**
+ * 按调用顺序从当前函数组件 fiber 上读/写 state。
+ * setState 把更新推进这条 hook 的 queue，再以 currentRoot 为 alternate 起一轮新 render。
+ * @param {any} initial
+ * @returns {[any, function]}
+ */
+export function useState(initial) {
+    if (!wipFiber) {
+        throw new Error('useState 只能在函数组件渲染时调用')
+    }
+
+    const oldHook = wipFiber.alternate && wipFiber.alternate.hooks
+        ? wipFiber.alternate.hooks[hookIndex]
+        : undefined
+    const hook = {
+        state: oldHook ? oldHook.state : initial,
+        queue: []
+    }
+
+    const actions = oldHook ? oldHook.queue : []
+    actions.forEach(action => {
+        hook.state = typeof action === 'function' ? action(hook.state) : action
+    })
+
+    const setState = action => {
+        if (!currentRoot) {
+            return
+        }
+        hook.queue.push(action)
+        wipRoot = {
+            dom: currentRoot.dom,
+            props: currentRoot.props,
+            alternate: currentRoot
+        }
+        deletions = []
+        nextUnitOfWork = wipRoot
+        scheduleWorkLoop()
+    }
+
+    wipFiber.hooks.push(hook)
+    hookIndex++
+    return [hook.state, setState]
 }
 
 /**

@@ -6,8 +6,9 @@
     <title>mini-react</title>
 </head>
 <body>
-    <p>App / Title 是函数组件，自己没有 DOM。按钮在 #app 外面，用原生监听触发第二次 render，验证函数组件下的 UPDATE / DELETION / PLACEMENT。</p>
-    <button id="btn-update">改标题（UPDATE）</button>
+    <p>+1 / +2 走组件内部的 useState；删/加一项仍是外部 render 换 props。按钮都在 #app 外面，不经过事件系统。</p>
+    <button id="btn-inc">count +1（useState）</button>
+    <button id="btn-inc-twice">连续 +1 两次</button>
     <button id="btn-remove">删一项（DELETION）</button>
     <button id="btn-add">加一项（PLACEMENT）</button>
     <div id="app"></div>
