@@ -25,7 +25,7 @@ yarn test
 | Step 2 | Fiber 链表 + `requestIdleCallback` 可中断渲染循环 | 完成 |
 | Step 3 | render / commit 两阶段，消除「半棵树」中间态 | 完成 |
 | Step 4 | Reconciliation：`alternate` + `effectTag` 增量更新 | 完成 |
-| Step 5 | 函数组件 | 未开始 |
+| Step 5 | 函数组件 | 完成 |
 | Step 6 | `useState` | 未开始 |
 | Step 7 | 事件系统 | 未开始 |
 | Step 8 | `useEffect` | 未开始 |
@@ -38,13 +38,14 @@ src/
 ├── createDom.js    创建 DOM + updateDom（按 props 差量写属性）
 ├── render.js       fiber 工作循环 / render-commit / reconcile
 ├── types.js        ReactElement / Fiber 的 JSDoc typedef
-├── App.jsx         createApp(title, items)，给二次 render 用
+├── App.jsx         App / Title 函数组件，给二次 render 用
 └── main.js         入口；原生按钮触发 UPDATE / DELETION / PLACEMENT
 debug/
 └── debug.js        实验开关与日志，默认只开总开关
 test/
 ├── createElement.test.js
 ├── reconcile.test.js
+├── function-component.test.js
 └── dom-stub.js     Node 里用的 document / requestIdleCallback stub
 tools/
 ├── jsx-transform.mjs

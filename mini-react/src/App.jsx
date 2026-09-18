@@ -1,17 +1,24 @@
 import createElement from './react.js'
 
 /**
- * 用 createElement 展开列表，避免 JSX `{items.map}` 变成单个 array child。
- * 第二次 render 由 main.js 里的原生按钮触发，不依赖事件系统 / 函数组件。
+ * 嵌套函数组件：自己没有 DOM，commit 时要跳过它找到下面的 h1。
  */
-export function createApp(title = 'hello', items = ['alpha', 'beta']) {
+function Title({ text }) {
+    return createElement('h1', null, text)
+}
+
+/**
+ * 真正的函数组件。第二次 render 仍由 main.js 里的原生按钮触发。
+ * 列表继续用 rest 展开，避免 JSX `{items.map}` 变成单个 array child。
+ */
+export function App({ title = 'hello', items = ['alpha', 'beta'] }) {
     return createElement(
         'div',
         {
             id: 'box',
             style: 'background:#c0392b;color:#fff;padding:16px;font-family:sans-serif'
         },
-        createElement('h1', null, title),
+        createElement(Title, { text: title }),
         createElement(
             'ul',
             null,
@@ -20,4 +27,4 @@ export function createApp(title = 'hello', items = ['alpha', 'beta']) {
     )
 }
 
-export default createApp
+export default App

@@ -15,7 +15,7 @@ function createTextElement(text) {
 }
 
 /**
- * @param {string} type
+ * @param {string|Function} type
  * @param {Object|null} props
  * @param {...(ReactElement|string|number)} children
  * @returns {ReactElement}

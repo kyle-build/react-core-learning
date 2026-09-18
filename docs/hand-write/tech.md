@@ -494,18 +494,122 @@ function commitRoot() {
 
 **遗留问题（留给 Step 5）**：现在 `fiber.type` 只能是字符串（标签名或 `TEXT_ELEMENT`）。还不能写函数组件，也就没有组件自己的「实例」去接 `useState`。下一步要在 `performUnitOfWork` 里识别函数 type、调用它拿到 children；函数组件 fiber **没有自己的 dom**，commit 的 append / 删除都要向上找到最近的 host 祖先。
 
+## Step 5：函数组件
+
+**目标**：`fiber.type` 可以是函数。组件自己不占一层 DOM，返回的 host 树照样能挂上、更新、删掉。这一步仍然靠外部手动 `render` 触发更新，不引入 hooks。
+
+**问题 1：host 组件和函数组件的「孩子从哪来」根本不是一回事**
+`div` 的 children 写在 `props.children` 里；`function App(props) { return <div/> }` 的 children 是函数的**返回值**。如果继续无脑 `createDom(fiber)`，`document.createElement(App)` 会把函数当成标签名，直接坏掉。
+→ `performUnitOfWork` 按 `typeof fiber.type === 'function'` 拆成两条路径。
+
+```
+host：createDom + reconcile(props.children)
+函数：children = [fiber.type(fiber.props)] + reconcile(children)
+```
+
+函数每次作为工作单元被处理时都会重新调用一遍，返回值再交给 Step 4 的 `reconcileChildren` 去打 tag。`sameType` 比的是函数引用：同一个 `App` 就是 UPDATE，换了另一个函数就是拆掉重建。
+
+**问题 2：函数组件没有 .dom，commit 不能再写 `fiber.parent.dom`**
+```
+#app（根，有 dom）
+  └─ App（函数，dom = null）
+       └─ div#box（host，有 dom）   ← 真正要 append 的节点
+            └─ Title（函数，dom = null）
+                 └─ h1（host）
+```
+`div#box` 的 parent 是 App，App 没有 `.dom`。继续 `fiber.parent.dom.appendChild` 会报错。
+→ 挂载/更新时沿 `parent` 往上走到第一个带 `.dom` 的 fiber（host 或根容器），把它当 DOM 父节点。函数组件自己的 PLACEMENT / UPDATE 是空操作，只递归 child / sibling。
+
+**问题 3：删掉的是函数组件时，页面上要摘的是它底下的 host 节点**
+`Item` 被 DELETION 时，`Item.dom` 是 `null`，`removeChild` 没东西可摘，`<li>` 会留在文档里。
+→ `commitDeletion` 自己有 `.dom` 就摘掉（子树随节点离开）；否则只走**它自己的 child 链表**，不能走 `sibling`——那是父节点的其他孩子，不在这次删除范围内。
+
+链路：`function type --[调用]--> 返回的 element --[reconcile]--> 子 fiber --[commit 跳过空 .dom]--> 挂到最近的 host 祖先`
+
+**实现（`render.js`）**：
+
+```js
+function performUnitOfWork(fiber) {
+    if (typeof fiber.type === 'function') {
+        updateFunctionComponent(fiber)
+    } else {
+        updateHostComponent(fiber)
+    }
+    // child -> sibling -> 回溯 parent，和 Step 2 一样
+}
+
+function updateFunctionComponent(fiber) {
+    const children = [fiber.type(fiber.props)]
+    reconcileChildren(fiber, children)
+}
+
+function updateHostComponent(fiber) {
+    if (!fiber.dom) {
+        fiber.dom = createDom(fiber)
+    }
+    reconcileChildren(fiber, fiber.props.children ?? [])
+}
+```
+
+commit 阶段找 host 父节点、删除时向下找 host 子节点：
+
+```js
+function findHostParentDom(fiber) {
+    let parent = fiber.parent
+    while (parent && !parent.dom) {
+        parent = parent.parent
+    }
+    return parent && parent.dom
+}
+
+function commitDeletion(fiber, domParent) {
+    if (fiber.dom) {
+        domParent.removeChild(fiber.dom)
+        return
+    }
+    let child = fiber.child
+    while (child) {
+        commitDeletion(child, domParent)
+        child = child.sibling
+    }
+}
+```
+
+演示页把 `createApp(...)` 换成真正的函数组件：`render(createElement(App, { title, items }), root)`。`App` 里面再嵌一个 `Title`，用来确认「函数套函数」也不会多出一层 DOM。按钮仍然在 `#app` 外面，用原生监听触发第二次 render。
+
+**踩坑记录**：
+1. **函数返回值必须包成数组再交给 `reconcileChildren`** → `reconcileChildren` 按 `elements.length` 和 index 遍历。直接把返回的 element 对象传进去，`.length` 是 `undefined`，循环根本不会跑，页面空白。
+2. **`commitDeletion` 不能递归删除 fiber 的 sibling** → 被删的是 `Item(beta)` 时，它的 sibling 是还要留着的 `Item(alpha)`。走 sibling 会把不该删的节点一起摘掉。只遍历被删节点自己的 child 链表。
+3. **`fiber.parent.dom` 在函数组件出现后不再安全** → parent 可能是函数组件。PLACEMENT / DELETION 都改成 `findHostParentDom`。
+4. **`sameType` 比的是函数引用** → 每次 render 都写 `function Title(){}` 会得到新的函数对象，全部被当成 PLACEMENT + DELETION，DOM 无法复用。组件定义必须稳定（模块顶层，或测试里提到外面）。
+
+**验证方式**：
+1. 最快：`cd mini-react && yarn test`。`function-component.test.js` 钉死四件事：函数返回的 host 树能挂上且 `container` 下没有多余包装节点；`Outer → Title → h1` 嵌套后 DOM 仍是一层 `h1`；同函数二次 render 复用 `h1`/文本节点只改 `nodeValue`；`ul` 里两个 `Item` 函数组件删掉一个时，对应 `li` 被摘掉、剩下的 DOM 引用不变。
+2. 原有 `reconcile.test.js` 仍然全是 host 组件，用来确认拆分 `updateHostComponent` 没有把 Step 4 弄坏。
+3. 浏览器：`yarn dev` 后页面结构和 Step 4 一样。改标题时红盒子不重建；删/加 `li` 其余项保持原位。DOM 里看不到 App / Title 对应的节点。
+
+### 原理答疑
+
+**函数组件的 fiber 为什么没有 .dom**
+它不是浏览器认识的标签，只是「根据 props 算出下一棵 element 树」的函数。真正进文档的是它 return 出来的 host 节点。fiber 仍然在链表里占一个位置（有 parent / child / sibling / alternate），这样 reconcile 才能按组件粒度配对，只是 commit 时看见 `.dom == null` 就跳过。
+
+**那 hooks 以后挂在哪**
+挂在这个「没有 dom 的 fiber」上，而不是挂在函数闭包里。函数每次 `updateFunctionComponent` 都会重新执行，闭包里的局部变量留不住；fiber 对象在 UPDATE 时通过 `alternate` 活过一轮。这是 Step 6 的入口。
+
+**遗留问题（留给 Step 6）**：函数组件能渲染了，但还没有自己的状态。现在要变界面只能从外面再调一次 `render(createElement(App, newProps), root)`。下一步要在函数组件 fiber 上挂 `hooks` 数组，靠 `hookIndex` 定位；`setState` 以 `currentRoot` 为 alternate 起一轮新 render，这样组件内部就能自己触发更新。
+
 ## 后续计划
 
 每个未做的 Step 仍然保持「一块能力、一套能单独跑的测试」，不把两件只能分开验证的事捆在一起。
 
-### 阶段一：补齐渲染闭环（Step 5 - 8）
+### 阶段一：补齐渲染闭环（Step 6 - 8）
 
-- **Step 5：函数组件** —— `fiber.type` 是函数时调用它拿 children，拆成 `updateFunctionComponent` / `updateHostComponent`。单独测试：函数返回的 host 树能挂上；函数组件自己没有 `dom`，commit 仍能 append 到 host 祖先。
+- ~~**Step 5：函数组件**~~（已完成）
 - **Step 6：useState** —— fiber 上挂 `hooks` 数组，靠 `hookIndex` 定位；`setState` 以 `currentRoot` 为 alternate 起一轮新 render。单独测试：连续两次 `setState` 能留下 state；条件调用 hook 会错位（用来解释规则）。
 - **Step 7：事件系统** —— `on` 开头的 prop 走 `addEventListener`，UPDATE 时先卸旧监听再绑新的。单独测试：click 能调到最新 handler，节点删除后监听不泄漏。
 - **Step 8：useEffect** —— commit 后执行，依赖数组比对，有 cleanup。单独测试：依赖不变不重跑；节点删除时 cleanup 会执行。
 
-走完这四步的验收标准：能跑通一个真实的 TodoList（输入、添加、删除、勾选），且输入框内容在重渲染后不丢失。
+走完这三步的验收标准：能跑通一个真实的 TodoList（输入、添加、删除、勾选），且输入框内容在重渲染后不丢失。
 
 ### 阶段二：工程化细节
 
