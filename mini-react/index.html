@@ -6,11 +6,7 @@
     <title>mini-react</title>
 </head>
 <body>
-    <p>+1 / +2 走组件内部的 useState；删/加一项仍是外部 render 换 props。按钮都在 #app 外面，不经过事件系统。</p>
-    <button id="btn-inc">count +1（useState）</button>
-    <button id="btn-inc-twice">连续 +1 两次</button>
-    <button id="btn-remove">删一项（DELETION）</button>
-    <button id="btn-add">加一项（PLACEMENT）</button>
+    <p>按钮在组件内部，onClick 走 mini-react 的事件系统，直接调 setState。</p>
     <div id="app"></div>
     <script type="module" src="./src/main.js"></script>
 </body>

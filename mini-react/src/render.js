@@ -318,6 +318,7 @@ function commitDeletion(fiber, domParent) {
         return
     }
     if (fiber.dom) {
+        updateDom(fiber.dom, fiber.props, {})
         domParent.removeChild(fiber.dom)
         return
     }

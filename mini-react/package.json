@@ -5,12 +5,12 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "node --test test/createElement.test.js test/reconcile.test.js test/function-component.test.js test/useState.test.js"
+    "test": "node --test test/createElement.test.js test/reconcile.test.js test/function-component.test.js test/useState.test.js test/events.test.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "从零手写的 mini-react：createElement / Fiber / render-commit / reconciliation / 函数组件 / useState",
+  "description": "从零手写的 mini-react：createElement / Fiber / render-commit / reconciliation / 函数组件 / useState / 事件",
   "devDependencies": {
     "@babel/generator": "^8.0.0",
     "@babel/parser": "^8.0.4",

@@ -2,8 +2,16 @@ import { debugConfig, debug } from '../debug/debug.js'
 
 /** @typedef {import('./types.js').Fiber} Fiber */
 
+function isEvent(key) {
+    return /^on[A-Z]/.test(key)
+}
+
 function isProperty(key) {
-    return key !== 'children' && key !== 'style'
+    return key !== 'children' && key !== 'style' && !isEvent(key)
+}
+
+function eventTypeOf(key) {
+    return key.slice(2).toLowerCase()
 }
 
 /**
@@ -16,6 +24,30 @@ function isProperty(key) {
 export function updateDom(dom, prevProps, nextProps) {
     prevProps = prevProps ?? {}
     nextProps = nextProps ?? {}
+
+    Object.keys(prevProps).forEach(key => {
+        if (!isEvent(key)) {
+            return
+        }
+        if (key in nextProps && prevProps[key] === nextProps[key]) {
+            return
+        }
+        if (typeof prevProps[key] === 'function' && dom.removeEventListener) {
+            dom.removeEventListener(eventTypeOf(key), prevProps[key])
+        }
+    })
+
+    Object.keys(nextProps).forEach(key => {
+        if (!isEvent(key)) {
+            return
+        }
+        if (prevProps[key] === nextProps[key]) {
+            return
+        }
+        if (typeof nextProps[key] === 'function' && dom.addEventListener) {
+            dom.addEventListener(eventTypeOf(key), nextProps[key])
+        }
+    })
 
     if ('style' in dom) {
         const el = /** @type {HTMLElement} */ (dom)
@@ -50,9 +82,10 @@ export function updateDom(dom, prevProps, nextProps) {
 function createDom(fiber) {
     debug(`[createDom] ${fiber.type}`, debugConfig.logCreateDom)
 
-    const dom = fiber.type === 'TEXT_ELEMENT'
+    const type = /** @type {string} */ (fiber.type)
+    const dom = type === 'TEXT_ELEMENT'
         ? document.createTextNode('')
-        : document.createElement(fiber.type)
+        : document.createElement(type)
 
     updateDom(dom, {}, fiber.props)
     return dom

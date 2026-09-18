@@ -9,6 +9,26 @@ export class StubElement {
         this.style = { cssText: '' }
         this.parentNode = null
         this.__id = ++seq
+        this.listeners = Object.create(null)
+    }
+
+    addEventListener(type, handler) {
+        const list = this.listeners[type] || (this.listeners[type] = [])
+        list.push(handler)
+    }
+
+    removeEventListener(type, handler) {
+        const list = this.listeners[type]
+        if (!list) {
+            return
+        }
+        this.listeners[type] = list.filter(item => item !== handler)
+    }
+
+    dispatchEvent(event) {
+        const list = [...(this.listeners[event.type] || [])]
+        list.forEach(handler => handler(event))
+        return true
     }
 
     appendChild(child) {

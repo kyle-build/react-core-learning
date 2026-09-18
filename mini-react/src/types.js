@@ -12,6 +12,7 @@
  * @property {string} [nodeValue]
  * @property {string} [style]
  * @property {string} [id]
+ * @property {Function} [onClick]
  */
 
 /**

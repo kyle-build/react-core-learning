@@ -27,7 +27,7 @@ yarn test
 | Step 4 | Reconciliation：`alternate` + `effectTag` 增量更新 | 完成 |
 | Step 5 | 函数组件 | 完成 |
 | Step 6 | `useState` | 完成 |
-| Step 7 | 事件系统 | 未开始 |
+| Step 7 | 事件系统 | 完成 |
 | Step 8 | `useEffect` | 未开始 |
 
 ## 目录结构
@@ -35,19 +35,20 @@ yarn test
 ```
 src/
 ├── react.js        createElement；再导出 useState
-├── createDom.js    创建 DOM + updateDom（按 props 差量写属性）
+├── createDom.js    创建 DOM + updateDom（属性差量 + on* 事件）
 ├── render.js       fiber 工作循环 / render-commit / reconcile / useState
 ├── types.js        ReactElement / Fiber / Hook 的 JSDoc typedef
-├── App.jsx         App / Title；count 走 useState
-└── main.js         入口；原生按钮触发 setState 或外部 render
+├── App.jsx         内部按钮 onClick → setState
+└── main.js         入口，只 render 一次
 debug/
-└── debug.js        实验开关与日志，默认只开总开关
+└── debug.js
 test/
 ├── createElement.test.js
 ├── reconcile.test.js
 ├── function-component.test.js
 ├── useState.test.js
-└── dom-stub.js
+├── events.test.js
+└── dom-stub.js     含 addEventListener / dispatchEvent
 tools/
 ├── jsx-transform.mjs
 └── vite-plugin-my-jsx.mjs
@@ -66,4 +67,4 @@ tools/
 
 `render.js` 里的 `YIELD_MARGIN` 决定什么时候让出主线程，语义是「剩下的时间还够不够再做一个工作单元」，所以取值应当约等于单个工作单元的典型耗时。因为 `IdleDeadline.timeRemaining()` 的返回值钳制在 0 以上，这个值设成 `0` 会让 `shouldYield` 永远为假，等于关掉时间分片。
 
-Step 6 的页面验证：点「count +1」/「连续 +1 两次」走组件内部 `useState`；点「删/加一项」是外部再 `render` 一次。按钮都在 `#app` 外面，不经过 mini-react 的事件系统。
+Step 7 的页面验证：打开 dev server 后点组件内部的 `+1` / `+2` / 删一项 / 加一项。这些按钮的 `onClick` 走 `addEventListener`，不再放在 `#app` 外面。

@@ -680,23 +680,96 @@ current 是已经画到屏幕上的那一轮。render 阶段必须可中断、�
 
 **遗留问题（留给 Step 7）**：组件能自己更新了，但还不能在 JSX 上写 `onClick={...}`。现在按钮必须放在 `#app` 外面。下一步让 `on` 开头的 prop 走 `addEventListener`，UPDATE 时先卸旧监听再绑新的，这样 `setCount` 就能直接挂在组件内部的按钮上。
 
+## Step 7：事件系统
+
+**目标**：host 节点上的 `onClick` 这类 prop 会真正绑到 DOM 上。二次 render 换掉旧 handler，节点删掉时把监听卸掉。组件内部的按钮可以直接 `setState`，不再把 setter 交到 `#app` 外面。
+
+**问题 1：`onClick` 不是 DOM 属性**
+如果继续 `dom[key] = nextProps[key]`，浏览器只会设一个叫 `onClick` 的 expando，**不会**注册点击回调。点下去什么都不会发生。
+→ `on` + 大写字母开头的 key 走 `addEventListener`。事件名把前缀剥掉再小写：`onClick` → `click`。普通属性（`id` / `nodeValue`）和 `style` 仍走原来的路径。
+
+**问题 2：每次 render 都会 new 一个箭头函数**
+`onClick={() => setCount(c => c + 1)}` 每次函数组件执行都是新引用。如果只 add 不 remove，同一节点上会叠很多监听，点一次触发一串旧闭包。
+→ UPDATE 时：旧 handler 和新 handler 不是同一个函数，就 `removeEventListener` 再 `addEventListener`。引用没变则不动。
+
+**问题 3：删除节点时 updateDom 根本不会跑**
+DELETION 只 `removeChild`。节点离开文档后，上面的 listener 还在。测试里拿着旧节点 `dispatchEvent` 仍然能调到 handler，这就是泄漏。
+→ `commitDeletion` 在摘节点之前先 `updateDom(dom, fiber.props, {})`，把所有 `on*` 当成「gone」卸掉。
+
+链路：`onClick={fn}` --[commit / updateDom]--> `addEventListener('click', fn)` --[换 handler 或删除]--> `removeEventListener`
+
+**实现（`createDom.js` / `render.js`）**：
+
+```js
+function isEvent(key) {
+    return /^on[A-Z]/.test(key)
+}
+
+function eventTypeOf(key) {
+    return key.slice(2).toLowerCase()
+}
+
+// updateDom 里先处理事件，再处理 style / 普通属性
+Object.keys(prevProps).forEach(key => {
+    if (!isEvent(key)) return
+    if (key in nextProps && prevProps[key] === nextProps[key]) return
+    dom.removeEventListener(eventTypeOf(key), prevProps[key])
+})
+Object.keys(nextProps).forEach(key => {
+    if (!isEvent(key) || prevProps[key] === nextProps[key]) return
+    dom.addEventListener(eventTypeOf(key), nextProps[key])
+})
+```
+
+```js
+function commitDeletion(fiber, domParent) {
+    if (fiber.dom) {
+        updateDom(fiber.dom, fiber.props, {})
+        domParent.removeChild(fiber.dom)
+        return
+    }
+    // 函数组件：只走自己的 child
+}
+```
+
+演示页去掉 `#app` 外面的原生按钮和 `countApi`。`App` 内部四个 `button` 的 `onClick` 分别 `setCount` / `setItems`。
+
+**踩坑记录**：
+1. **`dom.onClick = fn` 看起来像绑定了** → 那只是设了一个 JS 属性，点击不会触发。必须 `addEventListener('click', fn)`。
+2. **只用 `key.startsWith('on')`** → `only`、`on` 也会被当成事件。要用 `on` 后面跟大写字母：`/^on[A-Z]/`。
+3. **DELETION 不走 `updateDom`** → 旧节点上的 listener 还在。测试里对 detached 节点 `dispatchEvent` 仍会 ++。摘之前先用空 nextProps 卸监听。
+4. **handler 用 `count + 1` 而不是 `c => c + 1`** → 闭包捕获的是当轮 render 的 `count`。如果不换监听，第二次 click 还是 `setCount(0+1)`，数字卡在 1。`events.test.js` 用这个写法专门钉死「必须绑最新 handler」。
+
+**验证方式**：
+1. 最快：`cd mini-react && yarn test`。`events.test.js` 钉死四件事：click 能触发；连续两次 click 数字变成 2（最新闭包）；去掉 `onClick` 后旧监听不触发；节点换成 `span` 后对旧 `button` 再 dispatch 不再 ++。
+2. 原有 reconcile / useState 用例不写 `on*`，用来确认事件分支没有把属性更新弄坏。
+3. 浏览器：`yarn dev` 后点组件内部的 `+1` / `+2` / 删一项 / 加一项。标题和列表跟着变，红盒子不重建。
+
+### 原理答疑
+
+**为什么不做成真正的委托（一个 root 上的 listener）**
+真实 React 17+ 把事件挂在 root 上做委托，为的是一致的冒泡和优先级。这一步只证明「prop → 原生监听 → setState」这条最小闭环。委托以后对照源码时再讲，避免和「换 handler / 删除要卸监听」混在一个 Step。
+
+**遗留问题（留给 Step 8）**：click 能更新界面了，但还没有「画完之后跑副作用」的时机。`useEffect` 必须等 commit 结束才执行，依赖没变不重跑，节点删除时要跑 cleanup。现在如果在函数体里直接 `document.title = count`，会在 render 阶段（可中断、可能重复执行）改外界，和 Step 3 的「render 无副作用」冲突。
+
 ## 后续计划
 
 每个未做的 Step 仍然保持「一块能力、一套能单独跑的测试」，不把两件只能分开验证的事捆在一起。
 
-### 阶段一：补齐渲染闭环（Step 7 - 8）
+### 阶段一：补齐渲染闭环（Step 8）
 
 - ~~**Step 5：函数组件**~~（已完成）
 - ~~**Step 6：useState**~~（已完成）
-- **Step 7：事件系统** —— `on` 开头的 prop 走 `addEventListener`，UPDATE 时先卸旧监听再绑新的。单独测试：click 能调到最新 handler，节点删除后监听不泄漏。
+- ~~**Step 7：事件系统**~~（已完成）
 - **Step 8：useEffect** —— commit 后执行，依赖数组比对，有 cleanup。单独测试：依赖不变不重跑；节点删除时 cleanup 会执行。
 
-走完这两步的验收标准：能跑通一个真实的 TodoList（输入、添加、删除、勾选），且输入框内容在重渲染后不丢失。
+走完这一步的验收标准：能跑通一个真实的 TodoList（输入、添加、删除、勾选），且输入框内容在重渲染后不丢失。
 
 ### 阶段二：工程化细节
 
 - key 的 diff 策略（Step 4 按 index 配对，做完正好能讲清楚 key 为什么重要）
 - `createElement` 拍平 array child（现在 JSX `map` 会踩这个坑）
+- 事件委托（现在是逐节点 `addEventListener`）
 - `useMemo` / `useRef` / `useContext`
 - 批处理：多次 `setState` 合并成一次 render（浏览器里同一事件里连续 `setState` 已经会进同一条 queue；测试用的同步 idle polyfill 不会）
 
