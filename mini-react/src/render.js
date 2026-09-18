@@ -156,7 +156,9 @@ export function useState(initial) {
     const oldHook = wipFiber.alternate && wipFiber.alternate.hooks
         ? wipFiber.alternate.hooks[hookIndex]
         : undefined
+    /** @type {import('./types.js').Hook} */
     const hook = {
+        tag: 'STATE',
         state: oldHook ? oldHook.state : initial,
         queue: []
     }
@@ -184,6 +186,46 @@ export function useState(initial) {
     wipFiber.hooks.push(hook)
     hookIndex++
     return [hook.state, setState]
+}
+
+/**
+ * 把副作用登记到当前函数组件 fiber 上。真正执行发生在 commit 之后。
+ * deps 不变则跳过；没有 deps 数组则每次 commit 都跑。
+ * @param {Function} callback
+ * @param {any[]=} deps
+ */
+export function useEffect(callback, deps) {
+    if (!wipFiber) {
+        throw new Error('useEffect 只能在函数组件渲染时调用')
+    }
+
+    const oldHook = wipFiber.alternate && wipFiber.alternate.hooks
+        ? wipFiber.alternate.hooks[hookIndex]
+        : undefined
+    /** @type {import('./types.js').Hook} */
+    const hook = {
+        tag: 'EFFECT',
+        callback,
+        deps,
+        cleanup: oldHook ? oldHook.cleanup : undefined
+    }
+    wipFiber.hooks.push(hook)
+    hookIndex++
+}
+
+function depsChanged(prev, next) {
+    if (!prev || !next) {
+        return true
+    }
+    if (prev.length !== next.length) {
+        return true
+    }
+    for (let i = 0; i < prev.length; i++) {
+        if (!Object.is(prev[i], next[i])) {
+            return true
+        }
+    }
+    return false
 }
 
 /**
@@ -262,10 +304,66 @@ function reconcileChildren(wipFiber, elements) {
 }
 
 function commitRoot() {
+    deletions.forEach(unmountEffects)
     deletions.forEach(commitWork)
     commitWork(wipRoot.child)
     currentRoot = wipRoot
     wipRoot = null
+    runPassiveEffects(currentRoot)
+}
+
+/**
+ * 卸载子树里所有 effect 的 cleanup。只走 child 链表，不走 sibling
+ * （deletions 里的 fiber 的 sibling 可能还活着）。
+ * @param {Fiber | null | undefined} fiber
+ */
+function unmountEffects(fiber) {
+    if (!fiber) {
+        return
+    }
+    if (fiber.hooks) {
+        fiber.hooks.forEach(hook => {
+            if (hook.tag === 'EFFECT' && typeof hook.cleanup === 'function') {
+                hook.cleanup()
+                hook.cleanup = undefined
+            }
+        })
+    }
+    let child = fiber.child
+    while (child) {
+        unmountEffects(child)
+        child = child.sibling
+    }
+}
+
+/**
+ * commit 完 DOM 之后再跑 effect。依赖没变就沿用旧 cleanup，不重跑。
+ * @param {Fiber | null | undefined} fiber
+ */
+function runPassiveEffects(fiber) {
+    if (!fiber) {
+        return
+    }
+    if (fiber.hooks) {
+        const oldHooks = fiber.alternate && fiber.alternate.hooks
+        fiber.hooks.forEach((hook, index) => {
+            if (hook.tag !== 'EFFECT') {
+                return
+            }
+            const oldHook = oldHooks && oldHooks[index]
+            if (oldHook && !depsChanged(oldHook.deps, hook.deps)) {
+                hook.cleanup = oldHook.cleanup
+                return
+            }
+            if (oldHook && typeof oldHook.cleanup === 'function') {
+                oldHook.cleanup()
+            }
+            const cleanup = hook.callback()
+            hook.cleanup = typeof cleanup === 'function' ? cleanup : undefined
+        })
+    }
+    runPassiveEffects(fiber.child)
+    runPassiveEffects(fiber.sibling)
 }
 
 /**

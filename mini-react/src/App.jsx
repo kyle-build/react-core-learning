@@ -1,4 +1,4 @@
-import createElement, { useState } from './react.js'
+import createElement, { useState, useEffect } from './react.js'
 
 function Title({ text }) {
     return createElement('h1', null, text)
@@ -11,6 +11,14 @@ function Title({ text }) {
 export function App() {
     const [count, setCount] = useState(0)
     const [items, setItems] = useState(['alpha', 'beta'])
+
+    useEffect(() => {
+        const prev = document.title
+        document.title = `count: ${count}`
+        return () => {
+            document.title = prev
+        }
+    }, [count])
 
     return createElement(
         'div',

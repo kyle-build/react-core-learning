@@ -16,11 +16,15 @@
  */
 
 /**
- * 一次 useState 调用对应的记录，按调用顺序存在函数组件 fiber.hooks 里。
+ * 一次 hook 调用对应的记录，按调用顺序存在函数组件 fiber.hooks 里。
  *
  * @typedef {Object} Hook
- * @property {any} state
- * @property {any[]} queue
+ * @property {'STATE'|'EFFECT'} tag
+ * @property {any} [state]
+ * @property {any[]} [queue]
+ * @property {Function} [callback]
+ * @property {any[]} [deps]
+ * @property {Function} [cleanup]
  */
 
 /**

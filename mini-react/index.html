@@ -6,7 +6,7 @@
     <title>mini-react</title>
 </head>
 <body>
-    <p>按钮在组件内部，onClick 走 mini-react 的事件系统，直接调 setState。</p>
+    <p>按钮在组件内部。useEffect 会在 commit 之后把 document.title 同步成 count。</p>
     <div id="app"></div>
     <script type="module" src="./src/main.js"></script>
 </body>

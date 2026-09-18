@@ -28,17 +28,19 @@ yarn test
 | Step 5 | 函数组件 | 完成 |
 | Step 6 | `useState` | 完成 |
 | Step 7 | 事件系统 | 完成 |
-| Step 8 | `useEffect` | 未开始 |
+| Step 8 | `useEffect` | 完成 |
+
+阶段一主线已齐。下一步可以做一个 TodoList 当集成验收，或进入阶段二（key / flatten / 事件委托等）。
 
 ## 目录结构
 
 ```
 src/
-├── react.js        createElement；再导出 useState
+├── react.js        createElement；再导出 useState / useEffect
 ├── createDom.js    创建 DOM + updateDom（属性差量 + on* 事件）
-├── render.js       fiber 工作循环 / render-commit / reconcile / useState
+├── render.js       fiber 工作循环 / render-commit / reconcile / hooks
 ├── types.js        ReactElement / Fiber / Hook 的 JSDoc typedef
-├── App.jsx         内部按钮 onClick → setState
+├── App.jsx         onClick → setState；useEffect 同步 document.title
 └── main.js         入口，只 render 一次
 debug/
 └── debug.js
@@ -48,7 +50,8 @@ test/
 ├── function-component.test.js
 ├── useState.test.js
 ├── events.test.js
-└── dom-stub.js     含 addEventListener / dispatchEvent
+├── useEffect.test.js
+└── dom-stub.js
 tools/
 ├── jsx-transform.mjs
 └── vite-plugin-my-jsx.mjs
@@ -67,4 +70,4 @@ tools/
 
 `render.js` 里的 `YIELD_MARGIN` 决定什么时候让出主线程，语义是「剩下的时间还够不够再做一个工作单元」，所以取值应当约等于单个工作单元的典型耗时。因为 `IdleDeadline.timeRemaining()` 的返回值钳制在 0 以上，这个值设成 `0` 会让 `shouldYield` 永远为假，等于关掉时间分片。
 
-Step 7 的页面验证：打开 dev server 后点组件内部的 `+1` / `+2` / 删一项 / 加一项。这些按钮的 `onClick` 走 `addEventListener`，不再放在 `#app` 外面。
+Step 8 的页面验证：点 `+1` / `+2` 后，浏览器标签标题应变成 `count: N`。这是 `useEffect` 在 commit 之后写的，不是 render 阶段写的。

@@ -752,18 +752,79 @@ function commitDeletion(fiber, domParent) {
 
 **遗留问题（留给 Step 8）**：click 能更新界面了，但还没有「画完之后跑副作用」的时机。`useEffect` 必须等 commit 结束才执行，依赖没变不重跑，节点删除时要跑 cleanup。现在如果在函数体里直接 `document.title = count`，会在 render 阶段（可中断、可能重复执行）改外界，和 Step 3 的「render 无副作用」冲突。
 
+## Step 8：useEffect
+
+**目标**：函数组件可以用 `useEffect` 在 **commit 之后**跑副作用。依赖没变不重跑；依赖变了先跑上一轮 cleanup 再跑新 effect；组件从树上消失时跑 cleanup。不在这一步做 TodoList。
+
+**问题 1：函数体里改外界，会落在可中断的 render 阶段**
+`function App() { document.title = count }` 在 `updateFunctionComponent` 里执行。工作循环随时让出主线程，同一轮还可能因为高优先级更新作废。副作用必须发生在「这棵树已经画到屏幕上」之后。
+→ `useEffect` 只在 fiber 上登记 `{ callback, deps }`。`commitRoot` 改完 DOM，再走一遍树执行 callback。
+
+**问题 2：不是每次 commit 都该跑**
+`count` 变了才改 title；`items` 变了不该重跑 title 的 effect。没有 deps 数组则每次都跑；`[]` 只在挂载跑一次。
+→ 用 `Object.is` 逐项比对上一轮 `deps`。没变就把旧 `cleanup` 挪到新 hook 上，callback 不调用。
+
+**问题 3：组件删掉时，订阅还在**
+Child 里 `useEffect(() => { ...; return cleanup })`，Parent 把 Child 换成 `span` 之后，Child 不在新树上。只走 `runPassiveEffects(currentRoot)` 找不到它，cleanup 永不执行。
+→ commit 时先对 `deletions` 跑 `unmountEffects`（只走被删节点的 **child** 链表，不走 sibling），再改 DOM，再在新树上跑 effect。
+
+链路：`useEffect(fn, deps)` --[登记到 fiber.hooks]--> commit DOM --[deps 变了：cleanup → fn]--> 卸载：只跑 cleanup
+
+**实现（`render.js`，由 `react.js` 再导出 `useEffect`）**：
+
+`useEffect` 和 `useState` 共用 `hookIndex`，所以同样不能写在条件里。hook 用 `tag: 'STATE' | 'EFFECT'` 区分。
+
+```js
+function useEffect(callback, deps) {
+    const oldHook = wipFiber.alternate?.hooks?.[hookIndex]
+    wipFiber.hooks.push({
+        tag: 'EFFECT',
+        callback,
+        deps,
+        cleanup: oldHook ? oldHook.cleanup : undefined
+    })
+    hookIndex++
+}
+
+function commitRoot() {
+    deletions.forEach(unmountEffects)
+    deletions.forEach(commitWork)
+    commitWork(wipRoot.child)
+    currentRoot = wipRoot
+    wipRoot = null
+    runPassiveEffects(currentRoot)
+}
+```
+
+`unmountEffects` 只遍历被删 fiber 的 child；`runPassiveEffects` 才走 child + sibling 覆盖整棵当前树。
+
+演示：`App` 里 `useEffect` 把 `document.title` 写成 `count: N`，cleanup 把 title 改回去。点 `+1` 后看浏览器标签即可。
+
+**踩坑记录**：
+1. **在 `useEffect` 函数里立刻执行 callback** → 还在 render 阶段。测试把 `log.push('render')` 写在 `useEffect(...)` **后面**，正确顺序是 `['render', 'effect']`；若变成 `['effect', 'render']` 就是提前跑了。
+2. **卸载时顺着 `sibling` 扫 cleanup** → 被删 Child 的 sibling 可能是还活着的节点，会误跑别人的 cleanup。和 Step 5 的 `commitDeletion` 同一个坑。
+3. **deps 用 `===` 比数组本身** → 每次 render 都是新数组，会每次都重跑。要比的是数组里面的每一项，`Object.is`。
+4. **`useState` 和 `useEffect` 抢同一个 hook 槽** → 仍然按调用顺序。中间插入一条 effect，后面的 state 会读错。规则和 Step 6 一样。
+
+**验证方式**：
+1. 最快：`cd mini-react && yarn test`。`useEffect.test.js` 钉死：render 先于 effect；`[]` 只跑一次；`[count]` 变化时 `cleanup:0` 再 `effect:1`；无关 state 不重跑；Child 卸载 cleanup +1。
+2. 原有 useState / events 用例不写 `useEffect`，确认 hook 加 `tag` 没有把旧 hook 弄坏。
+3. 浏览器：`yarn dev` 后点 `+1`，标签页标题变成 `count: 1`；点 `+2` 再加 2。
+
+### 原理答疑
+
+**和真实 React 的差距**
+真实 React 把这类 effect 叫 passive effect，commit 之后再用调度器推迟到绘制完成。mini-react 在 `commitRoot` 末尾同步执行，方便测试断言，也足够讲清「render 登记、commit 后执行、卸载 cleanup」。`useLayoutEffect`、destroy 和 create 分两轮遍历，这里不做。
+
+**遗留问题（主线闭环之后）**：createElement / Fiber / commit / diff / 函数组件 / useState / 事件 / useEffect 都齐了，可以拿一个 TodoList 做集成验收（输入、添加、删除、勾选，输入框内容重渲染后不丢）。那是应用层 demo，不是新的引擎 Step。引擎上还缺 key、数组 child 拍平、事件委托、批处理，放到阶段二单独做。
+
 ## 后续计划
 
-每个未做的 Step 仍然保持「一块能力、一套能单独跑的测试」，不把两件只能分开验证的事捆在一起。
+阶段一主线已经走完。后面不再往同一个 Step 里塞新能力。
 
-### 阶段一：补齐渲染闭环（Step 8）
+### 阶段一之后：集成验收
 
-- ~~**Step 5：函数组件**~~（已完成）
-- ~~**Step 6：useState**~~（已完成）
-- ~~**Step 7：事件系统**~~（已完成）
-- **Step 8：useEffect** —— commit 后执行，依赖数组比对，有 cleanup。单独测试：依赖不变不重跑；节点删除时 cleanup 会执行。
-
-走完这一步的验收标准：能跑通一个真实的 TodoList（输入、添加、删除、勾选），且输入框内容在重渲染后不丢失。
+- **TodoList demo** —— 用现有 API 拼一个可增删改的列表，验证输入框在重渲染后不丢（DOM 复用）。不改引擎。
 
 ### 阶段二：工程化细节
 
@@ -771,7 +832,8 @@ function commitDeletion(fiber, domParent) {
 - `createElement` 拍平 array child（现在 JSX `map` 会踩这个坑）
 - 事件委托（现在是逐节点 `addEventListener`）
 - `useMemo` / `useRef` / `useContext`
-- 批处理：多次 `setState` 合并成一次 render（浏览器里同一事件里连续 `setState` 已经会进同一条 queue；测试用的同步 idle polyfill 不会）
+- 批处理：多次 `setState` 合并成一次 render
+- `useEffect` 推迟到 paint 之后（现在是 commit 末尾同步执行）
 
 ### 阶段三：对照真实 React 源码
 
