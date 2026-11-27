@@ -2,6 +2,8 @@
 
 目标：从零实现一个 mini-react，覆盖 createElement / Fiber 循环 / render-commit / 协调 diff / 函数组件 / useState，最终对着真实 React 源码的思路走一遍。这个文档随实现进度持续更新，每个 Step 对应一次可运行的迭代。
 
+整体链路图见 [浏览器笔记：从 React 代码到上屏](../browser-fundamentals.md#react-to-screen)，包含 JSX 编译、首次渲染、点击后的状态更新、浏览器出帧、页面刷新与开发热更新，并标明真实 React 与本项目的行为差异。
+
 ## 初始化环境
 ```
 yarn create vite
